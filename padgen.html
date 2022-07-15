@@ -1,0 +1,945 @@
+<html>
+<head>
+<meta charset="utf-8"> 
+<script language="JavaScript" type="text/javascript">
+/* FileSaver.js
+ * A saveAs() FileSaver implementation.
+ * 1.3.2
+ * 2016-06-16 18:25:19
+ *
+ * By Eli Grey, http://eligrey.com
+ * License: MIT
+ *   See https://github.com/eligrey/FileSaver.js/blob/master/LICENSE.md
+ */
+
+/*global self */
+/*jslint bitwise: true, indent: 4, laxbreak: true, laxcomma: true, smarttabs: true, plusplus: true */
+
+/*! @source http://purl.eligrey.com/github/FileSaver.js/blob/master/FileSaver.js */
+
+var saveAs = saveAs || (function(view) {
+	"use strict";
+	// IE <10 is explicitly unsupported
+	if (typeof view === "undefined" || typeof navigator !== "undefined" && /MSIE [1-9]\./.test(navigator.userAgent)) {
+		return;
+	}
+	var
+		  doc = view.document
+		  // only get URL when necessary in case Blob.js hasn't overridden it yet
+		, get_URL = function() {
+			return view.URL || view.webkitURL || view;
+		}
+		, save_link = doc.createElementNS("http://www.w3.org/1999/xhtml", "a")
+		, can_use_save_link = "download" in save_link
+		, click = function(node) {
+			var event = new MouseEvent("click");
+			node.dispatchEvent(event);
+		}
+		, is_safari = /constructor/i.test(view.HTMLElement) || view.safari
+		, is_chrome_ios =/CriOS\/[\d]+/.test(navigator.userAgent)
+		, throw_outside = function(ex) {
+			(view.setImmediate || view.setTimeout)(function() {
+				throw ex;
+			}, 0);
+		}
+		, force_saveable_type = "application/octet-stream"
+		// the Blob API is fundamentally broken as there is no "downloadfinished" event to subscribe to
+		, arbitrary_revoke_timeout = 1000 * 40 // in ms
+		, revoke = function(file) {
+			var revoker = function() {
+				if (typeof file === "string") { // file is an object URL
+					get_URL().revokeObjectURL(file);
+				} else { // file is a File
+					file.remove();
+				}
+			};
+			setTimeout(revoker, arbitrary_revoke_timeout);
+		}
+		, dispatch = function(filesaver, event_types, event) {
+			event_types = [].concat(event_types);
+			var i = event_types.length;
+			while (i--) {
+				var listener = filesaver["on" + event_types[i]];
+				if (typeof listener === "function") {
+					try {
+						listener.call(filesaver, event || filesaver);
+					} catch (ex) {
+						throw_outside(ex);
+					}
+				}
+			}
+		}
+		, auto_bom = function(blob) {
+			// prepend BOM for UTF-8 XML and text/* types (including HTML)
+			// note: your browser will automatically convert UTF-16 U+FEFF to EF BB BF
+			if (/^\s*(?:text\/\S*|application\/xml|\S*\/\S*\+xml)\s*;.*charset\s*=\s*utf-8/i.test(blob.type)) {
+				return new Blob([String.fromCharCode(0xFEFF), blob], {type: blob.type});
+			}
+			return blob;
+		}
+		, FileSaver = function(blob, name, no_auto_bom) {
+			if (!no_auto_bom) {
+				blob = auto_bom(blob);
+			}
+			// First try a.download, then web filesystem, then object URLs
+			var
+				  filesaver = this
+				, type = blob.type
+				, force = type === force_saveable_type
+				, object_url
+				, dispatch_all = function() {
+					dispatch(filesaver, "writestart progress write writeend".split(" "));
+				}
+				// on any filesys errors revert to saving with object URLs
+				, fs_error = function() {
+					if ((is_chrome_ios || (force && is_safari)) && view.FileReader) {
+						// Safari doesn't allow downloading of blob urls
+						var reader = new FileReader();
+						reader.onloadend = function() {
+							var url = is_chrome_ios ? reader.result : reader.result.replace(/^data:[^;]*;/, 'data:attachment/file;');
+							var popup = view.open(url, '_blank');
+							if(!popup) view.location.href = url;
+							url=undefined; // release reference before dispatching
+							filesaver.readyState = filesaver.DONE;
+							dispatch_all();
+						};
+						reader.readAsDataURL(blob);
+						filesaver.readyState = filesaver.INIT;
+						return;
+					}
+					// don't create more object URLs than needed
+					if (!object_url) {
+						object_url = get_URL().createObjectURL(blob);
+					}
+					if (force) {
+						view.location.href = object_url;
+					} else {
+						var opened = view.open(object_url, "_blank");
+						if (!opened) {
+							// Apple does not allow window.open, see https://developer.apple.com/library/safari/documentation/Tools/Conceptual/SafariExtensionGuide/WorkingwithWindowsandTabs/WorkingwithWindowsandTabs.html
+							view.location.href = object_url;
+						}
+					}
+					filesaver.readyState = filesaver.DONE;
+					dispatch_all();
+					revoke(object_url);
+				}
+			;
+			filesaver.readyState = filesaver.INIT;
+
+			if (can_use_save_link) {
+				object_url = get_URL().createObjectURL(blob);
+				setTimeout(function() {
+					save_link.href = object_url;
+					save_link.download = name;
+					click(save_link);
+					dispatch_all();
+					revoke(object_url);
+					filesaver.readyState = filesaver.DONE;
+				});
+				return;
+			}
+
+			fs_error();
+		}
+		, FS_proto = FileSaver.prototype
+		, saveAs = function(blob, name, no_auto_bom) {
+			return new FileSaver(blob, name || blob.name || "download", no_auto_bom);
+		}
+	;
+	// IE 10+ (native saveAs)
+	if (typeof navigator !== "undefined" && navigator.msSaveOrOpenBlob) {
+		return function(blob, name, no_auto_bom) {
+			name = name || blob.name || "download";
+
+			if (!no_auto_bom) {
+				blob = auto_bom(blob);
+			}
+			return navigator.msSaveOrOpenBlob(blob, name);
+		};
+	}
+
+	FS_proto.abort = function(){};
+	FS_proto.readyState = FS_proto.INIT = 0;
+	FS_proto.WRITING = 1;
+	FS_proto.DONE = 2;
+
+	FS_proto.error =
+	FS_proto.onwritestart =
+	FS_proto.onprogress =
+	FS_proto.onwrite =
+	FS_proto.onabort =
+	FS_proto.onerror =
+	FS_proto.onwriteend =
+		null;
+
+	return saveAs;
+}(
+	   typeof self !== "undefined" && self
+	|| typeof window !== "undefined" && window
+	|| this.content
+));
+// `self` is undefined in Firefox for Android content script context
+// while `this` is nsIContentFrameMessageManager
+// with an attribute `content` that corresponds to the window
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.saveAs = saveAs;
+} else if ((typeof define !== "undefined" && define !== null) && (define.amd !== null)) {
+  define("FileSaver.js", function() {
+    return saveAs;
+  });
+}
+
+</script>
+<script language="JavaScript" type="text/javascript">
+//string functions
+	
+	var __TEST__ = true; //set to true to test the functionality in this script block
+
+	/*
+		StringUtil
+			.generateRandomString(10)
+			.copy("this is my string")
+	*/
+	const StringUtil = 
+	{
+		generateRandomString : function(length)
+		{
+			var possible = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+			var rv = "";
+			for(var i=0; i< length; i++)
+			{
+				var cIdx = Math.floor(Math.random() * possible.length);
+				var c = possible.charAt(cIdx);
+				if(c == "")
+					var t = "";
+					
+				rv += c;
+			}
+			return rv;
+		},
+		copy : function(toCopy)
+		{
+			//does a deep copy of the string that addresses some browser (chrome) reference weirdness
+			return (' ' + toCopy).slice(1);
+		}
+	};
+	
+	/*
+		notes:  takes an initial string and keeps track of all of its mutations
+		
+		StringMutator(val, mutationsArray)
+			.getValue()
+			.getNarrative()
+			.primitive
+				.replaceSegment(10, "newSegment") 	//index, value
+				.insertSegment(4, "newSegment")		//index, value
+				.deleteSegment(7, 5)				//index, length
+			.reversible
+				.moveSegment(10, 5, 20)				//oldIndex, length, newIndex
+				.reverseSegment(10, 5)				//index, length
+				.swapSegments(1, 5, 25, 7)			//seg1Idx, seg1Length, seg2Idx, seg2Length
+				.runRandomReversibleTransforms(2)	//numTransforms
+			.nonreversible
+				.transformSegment (1, 5, transformFn)	//startPos, length, transformFn(startPos, segToTransform)
+				.setSegment(1, "newSegment")
+			.applyCurrentTransformations(anotherStringToMutate)
+	*/	
+	const StringMutator = function(val, narrative){
+		
+		//privates
+		var __self = this;
+		var __value = val //the value being mutated
+		var __narrative = narrative || []; //array of evalable mutation instructions
+		
+		//mutation primitives--------replace, insert, delete, move
+			//note: we use string concat instead of array.join because it's more performant on the majority usecases amongst browser engines		
+			
+		//replaces segment starting at idx
+		var _replaceSegment = function(idx, val)
+		{
+			var newVal = "";
+			for(var i=0; i<__value.length; i++)
+			{
+				if(i<idx || i >= idx + val.length)
+				{
+					newVal += __value[i];			
+				}
+				else 
+				{
+					newVal += val;		
+					i = idx + val.length -1; //move the cursor			
+				}
+			}
+			__value = newVal;
+					
+		};
+		//inserts segment starting at idx
+		var _insertSegment = function(idx, val)
+		{
+			var newVal = "";
+			for(var i=0; i< (__value.length + val.length); i++)
+			{
+				if(i<idx)
+				{
+					//we're before the insertion point, everything is the same up to here
+					newVal += __value[i];			
+				}
+				else if(i >= idx + val.length)
+				{
+					//we're past the insertion point, we copy the old string back
+					newVal += __value[i - val.length ]			
+				}
+				else {
+					//we're in the insertion
+					newVal += val;
+					i = idx + val.length -1; //move the cursor	
+				}
+			}
+			__value = newVal;		
+		};
+		//deletes segment starting at idx
+		var _deleteSegment = function(idx, length)
+		{
+			var newVal = "";
+			for(var i=0; i<__value.length; i++)
+			{
+				if(i<idx)
+				{
+					//we're before the deletion point, everything is the same up to here
+					newVal += __value[i];			
+				}
+				else if(i >= idx + length)
+				{
+					//we're past the deletion point, we copy the old string back
+					newVal += __value[i]			
+				}
+				else {
+					//we're in the deletion..so copy nothing over
+					i = idx + length -1; //move the cursor
+				}
+			}
+			__value = newVal;	
+		};
+		//move segment from idx to idxDest
+		var _moveSegment = function(idx, length, idxDest)
+		{
+			//skip out on the trivial nomove case
+			if(idx == idxDest)
+				return;
+				
+			var newVal = "";
+			var segment = __value.substr(idx, length);
+			
+			//a move is a deletion followed by an insertion
+			_deleteSegment(idx, length);
+			
+			if(idx < idxDest)			
+				_insertSegment(idxDest - length, segment);			
+			else
+				_insertSegment(idxDest, segment);
+		};
+		
+		//publics
+		this.getValue = function()
+		{
+			return __value;
+		};
+		this.getNarrative = function()
+		{
+			return [].concat(__narrative);
+		};
+		
+		//public primitives
+		this.primitive = {};
+		this.primitive.replaceSegment = function(idx, val)
+		{
+			var step = ".primitive.replaceSegment(" + idx + ",'" + val + "')";
+			try{
+				_replaceSegment(idx,val);
+				__narrative.push(step);
+			}
+			catch(e)
+			{
+				console.log("step error on " + step);
+				console.log(e);
+				throw e;
+			}
+			
+			return __self;
+		};
+		this.primitive.insertSegment = function(idx, val)
+		{
+			var step = ".primitive.insertSegment(" + idx + ",'" + val + "')";
+			
+			try{
+				_insertSegment(idx,val);
+				__narrative.push(step);
+			}
+			catch(e)
+			{
+				console.log("step error on " + step);
+				console.log(e);
+				throw e;
+			}
+			return __self;
+		};
+		this.primitive.deleteSegment = function(idx, length)
+		{
+			var step = ".primitive.deleteSegment(" + idx + "," + length + ")";
+
+			try{
+				_deleteSegment(idx, length);
+				__narrative.push(step);
+			}
+			catch(e)
+			{
+				console.log("step error on " + step);
+				console.log(e);
+				throw e;
+			}
+			return __self;
+		};
+		
+		//public reversibles
+		this.reversible = {};
+		//moves a segment from one spot to another
+		this.reversible.moveSegment = function(startPos, length, newStartPos)
+		{
+			if(startPos > __value.length)
+				return __self;
+				
+			if(startPos + length > __value.length)
+				return __self;
+			
+			var step = ".reversible.moveSegment(" + startPos + "," + length + "," + newStartPos + ")";
+			try{
+				_moveSegment(startPos, length, newStartPos);
+				__narrative.push(step);
+			}
+			catch(e)
+			{
+				console.log("step error on " + step);
+				console.log(e);
+				throw e;
+			}
+			return __self;
+		}
+		//reverses a segment
+		this.reversible.reverseSegment = function(startPos, length)
+		{
+			if(startPos > __value.length)
+				return __self;
+				
+			if(startPos + length > __value.length)
+				return __self;
+			
+			var step = ".reversible.reverseSegment(" + startPos + "," + length + ")";
+			try{
+				var seg = __value.substr(startPos, length);
+				var newSeg = seg.split("").reverse().join("");
+				_replaceSegment(startPos, newSeg);
+				__narrative.push(step);
+			}
+			catch(e)
+			{
+				console.log("step error on " + step);
+				console.log(e);
+				throw e;
+			}
+			return __self;
+		};
+		//swaps 2 segments.  if the segments overlap it ignores the mutation
+		this.reversible.swapSegments = function(startPos1, length1, startPos2, length2)
+		{
+			//skip if out of bounds
+			if(startPos1 < 0)
+				return __self;
+	
+			if(startPos2 < 0)
+				return __self;
+				
+			if(startPos1 > __value.length)
+				return __self;
+				
+			if(startPos1 + length1 > __value.length)
+				return __self;
+			
+			if(startPos2 > __value.length)
+				return __self;
+				
+			if(startPos2 + length2 > __value.length)
+				return __self;
+	
+			//figure out low and high segs
+			var lowSeg = {} 
+			var highSeg = {};
+			if(startPos1 > startPos2)
+			{
+				lowSeg.idx = startPos2;
+				lowSeg.length = length2;
+				highSeg.idx = startPos1;
+				highSeg.length = length1;		
+			}
+			else
+			{
+				lowSeg.idx = startPos1;
+				lowSeg.length = length1;
+				highSeg.idx = startPos2;
+				highSeg.length = length2;	
+			}	
+			//skip if intersecting ranges		
+			if(lowSeg.idx + lowSeg.length > highSeg.idx)
+				return __self;
+			
+			var step = ".reversible.swapSegments(" + startPos1 + "," + length1 + "," + startPos2 + "," + length2 + ")";
+			try{
+				//break into segments ABCDE
+				var segA = __value.substr(0, lowSeg.idx);
+				var segB = __value.substr(lowSeg.idx, lowSeg.length);
+				var segC = __value.substr(lowSeg.idx + lowSeg.length, highSeg.idx - (lowSeg.idx + lowSeg.length));			
+				var segD = __value.substr(highSeg.idx, highSeg.length);
+				var segE = __value.substr(highSeg.idx + highSeg.length, __value.length);
+			
+				//swap B and D
+				__value  = segA + segD + segC + segB + segE;
+		
+				__narrative.push(step);
+			}
+			catch(e)
+			{
+				console.log("step error on " + step);
+				console.log(e);
+				throw e;
+			}
+			return __self;
+		};
+		//this will run random reversible transformations (reverse, swap, move) numTimes
+		this.reversible.runRandomReversibleTransforms = function(numTimes)
+		{
+			for(var i=0; i< numTimes; i++)	
+			{
+				var mutationMode = Math.floor(Math.random() * 3 + 1);
+				if(mutationMode == 1)
+				{
+					//do a reverse
+					var idx = Math.floor(Math.random() * __value.length + 1);
+					var length = Math.floor(Math.random() * __value.length + 1);
+					if(idx + length > __value.length)
+						length = __value.length - idx -1;
+						
+					__self.reversible.reverseSegment(idx, length);	
+				}
+				else if(mutationMode == 2)
+				{
+					//do a swap segments
+					var idx1 = Math.floor(Math.random() * __value.length +1);
+					var idx2 = Math.floor(Math.random() * __value.length +1);
+					var length = Math.floor(Math.random() * __value.length +1 );
+					
+					if(idx1 + length > __value.length)
+						length = __value.length - idx1 -1;
+				
+					if(idx2 + length > __value.length)
+						length = __value.length - idx2 -1;
+						
+					__self.reversible.swapSegments(idx1, length, idx2, length);			
+				}
+				else if(mutationMode == 3)
+				{
+					//do a move segment
+					var idx1 = Math.floor(Math.random() * __value.length +1);
+					var idx2 = Math.floor(Math.random() * __value.length +1);
+					var length = Math.floor(Math.random() * __value.length +1 );
+					
+					if(idx1 + length > __value.length)
+						length = __value.length - idx1 -1;
+				
+					if(idx2 + length > __value.length)
+						length = __value.length - idx2 -1;
+						
+					//generate random chars
+					__self.reversible.moveSegment(idx1, length, idx2);	
+				}		
+			}
+			return __self;
+		};
+		
+		//non-reversible transformations	
+		this.nonreversible = {};	
+		//does a custom transformation function on a segment
+		this.nonreversible.transformSegment = function (startPos, length, /*function(idx, old)*/ transformFn)
+		{
+			if(startPos > __value.length)
+				return __self;
+				
+			if(startPos + length > __value.length)
+				return __self;
+					
+			var step = ".nonreversible.transformSegment(" + startPos + "," + length + "," + transformFn.toString() + ")";
+			try{
+				var seg = __value.substr(startPos, length);
+				var newSeg = transformFn(startPos, seg);
+
+				//if the transformation is smaller than the original, ignore it			
+				if(newSeg.length < length)
+					throw "smaller transformation error";
+				
+				//truncate newSeg to same length
+				newSeg = newSeg.substr(0, length);
+				_replaceSegment(startPos, newSeg);
+				__narrative.push(step);
+			}
+			catch(e)
+			{
+				console.log("step error on " + step);
+				console.log(e);
+				throw e;
+			}
+			return __self;
+		};
+		this.nonreversible.setSegment = function(startPos, val)
+		{		
+			if(startPos > __value.length)
+				return __self;
+				
+			if(startPos + val.length > __value.length)
+				return __self;
+			
+			var step = "nonreversible.setSegment(" + startPos + ",'" + val + "')";
+			
+			try{
+				_replaceSegment(startPos, val);
+				__narrative.push(step);
+			}
+			catch(e)
+			{
+				console.log("step error on " + step);
+				console.log(e);
+				throw e;
+			}
+			
+			return __self;	
+		};
+
+		
+		//runs the existing transformations on another string
+		this.applyCurrentTransformations = function(toMutate)
+		{
+			"use strict"; //to ensure eval is locally scoped
+			
+			var rv = {value : toMutate};
+			
+			var mutator = new StringMutator(toMutate);
+			for(var i=0;i<__narrative.length; i++)
+			{
+				try{
+					eval("mutator" + __narrative[i] + ";");
+					
+					var step = {};
+					step.value = mutator.getValue();
+					step.transform = __narrative[i];
+					rv["step" + i] = step;
+				}
+				catch(e)
+				{
+					rv.error = e;
+					rv.errorStepNumber =  i;
+					rv.errorStep = __narrative[i];
+					break;
+				}
+			}
+			if (!rv.error)
+				rv.result = mutator.getValue();
+			
+			return rv;
+		};
+	};
+	
+	StringMutator.new = function(val, narrative)
+	{
+		return new StringMutator(val, narrative);
+	};
+	
+	
+	if(__TEST__)
+	{
+		debugger
+		
+		//test primitives
+		(function()
+		{
+			var toMutate = "1234567890";
+			var replaceSet = "abcdefghij";	
+							
+			//replace forwards				
+			var m1 = StringMutator.new(toMutate);
+			for(var i=0; i<toMutate.length; i++)
+			{
+				m1.primitive.replaceSegment(i, replaceSet.charAt(i));
+			}
+			if(m1.getValue() != replaceSet)
+				throw "error";
+
+			//replace backwards
+			for(var i=toMutate.length; i>=0; i--)
+			{
+				m1.primitive.replaceSegment(i, toMutate.charAt(i));
+			}
+			if(m1.getValue() != toMutate)
+				throw "error";
+			
+			//insert forwards	
+			m1 = StringMutator.new(toMutate);
+			for(var i=0; i<toMutate.length; i++)
+			{
+				m1.primitive.insertSegment(i, replaceSet.charAt(i));
+			}
+			if(m1.getValue() !== 'abcdefghij1234567890')
+				throw "error";
+
+			//insert backwards
+			for(var i=toMutate.length; i>=0; i--)
+			{
+				m1.primitive.insertSegment(i, toMutate.charAt(i));
+			}
+			if(m1.getValue() !== '1a2b3c4d5e6f7g8h9i0j1234567890')
+				throw "error";
+			
+			//delete forward
+			m1 = StringMutator.new(toMutate + replaceSet);	
+			for(var i=0; i<toMutate.length; i++)
+			{
+				m1.primitive.deleteSegment(i, 1);
+			}
+			if(m1.getValue() !== "24680bdfhj")
+				throw "error";
+
+			//delete first char 10 times
+			m1 = StringMutator.new(toMutate + replaceSet);	
+			for(var i=0; i<toMutate.length; i++)
+			{
+				m1.primitive.deleteSegment(0, 1);
+			}
+			if(m1.getValue() !== replaceSet)
+				throw "error";
+				
+			//delete backwards
+			m1 = StringMutator.new(toMutate + replaceSet);		
+			for(var i=toMutate.length; i>=0; i--)
+			{
+				m1.primitive.insertSegment(i, toMutate.charAt(i));
+			}	
+		})();		
+		
+		//test reversibles
+		
+
+		//test nonreversibles
+				
+			
+		//test mutations
+		(function()
+		{
+			var toMutate = StringUtil.generateRandomString(1000);
+			var toMutate2 = StringUtil.copy(toMutate);
+					
+			var m1 = StringMutator.new(toMutate);
+			m1.reversible.runRandomReversibleTransforms(100);		
+			var mutated1 = m1.getValue();
+	
+			//now repeat it
+			var mutated2 = m1.applyCurrentTransformations(toMutate2);
+			
+			if(mutated1.trim() !== mutated2.result.trim())
+				throw "error";
+		})();
+		
+	}
+</script>
+</head>
+<body>
+<p>How to Use:<br>
+1.  Load your one-time-pad file or enter it manually<br>
+2.  Enter your transformation to run<br>
+3.  Press Transform.  The pad will be updated with the value of the operation.<br>
+</p>
+<form>
+  <h3>Pad</h3>
+  <div> 
+  	 <input type="file" id="pad-file" /> <input type="text" id="size" placeholder="size to generate" /><button id="generate" type="submit">Generate</button>
+  	 <br><textarea id="pad-text" style="width:100%" rows="10" placeholder="Enter pad text"></textarea>
+    <br><label id="pad-size" >Characters:</label>	
+    <br><textarea id="transformations" style="width:100%" rows="10" placeholder="Enter transformations.  Eg. .reverseSegment(1,10).swapSegments(1,10,30,5).setSegment(15, '12345')"></textarea>
+	 <br><label id="error">Error:</label>
+    <br><button id="transform" type="submit">Transform</button>
+    <br><input type="text" id="randomizeTimes" placeholder="number of times" /><button id="randomize" type="submit">Randomize</button>
+    <button id="save" type="submit">Save</button><input type="text" id="fileName"/>
+  </div>
+</form>
+
+<script language="JavaScript" type="text/javascript">
+//the UI behaviour
+
+
+	//helpers:	
+	//wires an event handler to an element
+	var bind = function (element, type, handler)
+	{
+		if (element.addEventListener) {
+			element.addEventListener(type, handler, false);
+		} else {
+			element.attachEvent('on'+type, handler);
+		}			
+	};
+
+	//wire UI		
+	(function()
+	{
+		//state:
+		//	the dom
+		
+		//helpers:
+		//sets the pad-text element content
+		var setPad = function(pad)
+		{
+			document.getElementById("pad-text").value = pad;
+				
+		   //set size label
+			var sizeEl = document.getElementById("pad-size");
+			sizeEl.textContent = "Characters: " + pad.length; 		
+		}
+
+		//events:	
+		//when pad-file element changes load the pad
+		bind(document.getElementById("pad-file"), "change", function(e)
+		{
+			if (!e) var e = window.event;
+			// e gives access to the event in all browsers
+			e.preventDefault();
+	    	
+	    	//get the pad
+	    	var padFile = document.getElementById("pad-file").files[0];
+			var reader = new FileReader();
+			
+			//upon read of the file set pad
+			reader.onload = function (e) 
+			{
+				//get the file contents
+				var pad = e.target.result;
+				setPad(pad);
+			};
+			
+			//read the file
+			reader.readAsText(padFile); 
+		});
+	  	
+	  	//when the transform element is clicked, do a transformation
+	  	bind(document.getElementById("transform"), "click", function(e)
+		{
+			if (!e) var e = window.event;
+			// e gives access to the event in all browsers
+			e.preventDefault();
+
+			//clear error
+			document.getElementById("error").textContent = "Error:";			
+			
+			//get pad and transformation element text
+			var pad = document.getElementById("pad-text").value;
+			var transformations = document.getElementById("transformations").value;
+			
+			//split the transformations by newline
+			var arr = transformations.split("\n");
+			
+			//load pad and mutations into a mutator
+			var mutator = StringMutator.new(pad, arr);
+			
+			//apply the transform
+			try 
+			{
+				var transform = mutator.applyCurrentTransformations(pad);
+				
+				//log to console the transformation
+				console.log(JSON.stringify(transform));
+				
+				//dump the result 
+				setPad(transform.result);
+			}
+			catch (e) 
+			{
+				//set the error
+				document.getElementById("error").textContent = "Error:" + e;		
+			}
+		});
+		
+		//when the generate element is clicked, generate a random pad
+		bind(document.getElementById("generate"), "click", function(e)
+		{
+			if (!e) var e = window.event;
+			// e gives access to the event in all browsers
+			e.preventDefault();
+
+			//clear error
+			document.getElementById("error").textContent = "Error:";			
+			
+			//get size of pad
+			var size = parseInt(document.getElementById("size").value);
+			
+			//geenrate pad
+			var pad = StringUtil.generateRandomString(size);
+			setPad(pad);
+			
+		});
+		
+		//when the randomize element is clicked, generate a random transformation
+		bind(document.getElementById("randomize"), "click", function(e)
+		{
+			if (!e) var e = window.event;
+			// e gives access to the event in all browsers
+			e.preventDefault();
+
+			//clear error
+			document.getElementById("error").textContent = "Error:";	
+			
+			//get pad	
+			var pad = document.getElementById("pad-text").value;	
+			var numTimes = parseInt(document.getElementById("randomizeTimes").value);
+			var mutator = StringMutator.new(pad);
+			
+			//generate random transforms
+			try 
+			{
+				var newPad = mutator.reversible.runRandomReversibleTransforms(numTimes);
+				document.getElementById("transformations").value = mutator.getNarrative().join("\n");
+			}
+			catch (e) 
+			{
+				document.getElementById("error").textContent = "Error:" + e;		
+			}
+			
+		});
+		
+		//when the save element is clicked, save the pad
+		bind(document.getElementById("save"), "click", function(e)
+		{
+			if (!e) var e = window.event;
+			// e gives access to the event in all browsers
+			e.preventDefault();
+
+			//clear error
+			document.getElementById("error").textContent = "Error:";			
+			
+			//save the pad
+			var pad = document.getElementById("pad-text").value;
+			var fileName = document.getElementById("fileName").value || "pad.txt";
+			var blob = new Blob([pad], {type: "text/plain;charset=utf-8"});
+  			saveAs(blob, fileName);
+			
+		});
+		
+	})();
+</script>
+
+</body>
+</html>

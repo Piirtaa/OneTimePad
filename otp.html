@@ -1,0 +1,231 @@
+<html>
+<head>
+<meta charset="utf-8"> 
+<script language="JavaScript" type="text/javascript">
+//the OTP functionality
+	
+	var __TEST__ = false; //set to true to test the functionality in this script block
+		
+	/*
+	
+		OTP
+			.encrypt = function(toEncrypt, pad)
+			.decrypt = function(toDecrypt, pad)
+	*/
+	const OTP = (function(){
+		
+		//private members and helpers
+		var base = 255;//set to whatever character set size you're using
+		//see: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/fromCharCode
+		
+		//does a modulus add.  ie. a roll-over add.  
+		var modAdd = function(num1, num2)
+		{
+			var add = num1 + num2;
+			if(add > base)
+				add = add - base;
+			
+			return add;
+		};	
+		
+		//does a modulus subtract.  a roll-over subtract.
+		var modSubtract = function(num1, num2)
+		{
+			var sub = num1 - num2;
+			if(sub < 0)
+				sub = sub + base;
+				
+			return sub;	
+		};
+		
+		//takes a pad and truncates it or multiplies it to the provided length
+		var padAdjust = function(pad, length)
+		{
+			if(!pad)
+				throw "invalid pad";
+
+			if(pad.length == length)
+				return pad;
+				
+			if(pad.length > length)
+				return pad.substr(0, length);
+			
+			//calculate how many times to copy the pad so that it fits the specified length	
+			var dupTimes = Math.floor(length / pad.length) + 1;
+			
+			var newPad;
+			for(var i=0; i<dupTimes; i++)
+				newPad += pad;
+			
+			return newPad.substr(0, length);	
+		};
+		
+		var rv = {};
+		rv.encrypt = function(toEncrypt, pad)
+		{
+			var fitPad = padAdjust(pad, toEncrypt.length);
+
+			var rv = "";	
+			for(var i=0; i<toEncrypt.length; i++)
+			{
+				
+				var c1 = toEncrypt.charCodeAt(i);
+				var c2 = fitPad.charCodeAt(i);
+				var c3 = modAdd(c1,c2);
+				var r = String.fromCharCode(c3)
+				rv += r;	
+			}
+			return rv;					
+		};
+		rv.decrypt = function(toDecrypt, pad)
+		{
+			var fitPad = padAdjust(pad, toDecrypt.length);
+			
+			var rv = "";	
+			for(var i=0; i<toDecrypt.length; i++)
+			{
+				var c1 = toDecrypt.charCodeAt(i);
+				var c2 = fitPad.charCodeAt(i);
+				var c3 = modSubtract(c1, c2);
+				var r = String.fromCharCode(c3);				
+				rv += r;	
+			}
+			return rv;					
+		};	
+		return rv;	
+	})();
+	
+
+	if(__TEST__)
+	{
+		//debugger
+		
+		//test it out
+		var toEncode = "abcdefghijklmnopqrstuvwxyz";
+		var pad = "abcdefghijklmnopqrstuvwxyz";
+		
+		var toDecode = OTP.encrypt(toEncode, pad);
+		var decoded = OTP.decrypt(toDecode, pad);
+		
+		if(toEncode.trim() !== decoded.trim())
+			throw "error";
+	}
+</script>
+
+
+</head>
+<body>
+<p>How to Use:<br>
+1.  Load your one-time-pad file<br>
+2.  Enter in your text to decode or encode<br>
+3.  Press decode or encode to decode or encode, respectively.  The text area will be updated with the value of the operation.<br>
+</p>
+<form>
+  <h3>Pad</h3>
+  <div> 
+  	 <input type="file" id="pad-file" /> 
+    <br><label id="pad-size" >Characters:</label>	 
+  </div>
+  <h3>Payload</h3>
+  <div width="100%">
+    <textarea id="payload-text" style="width:100%" rows="10" placeholder="Enter text to encrypt or decrypt"></textarea>
+    <br><label id="payload-size" >Characters:</label>
+    <br><button id="payload-encrypt" type="submit">Encrypt</button>
+    <button id="payload-decrypt" type="submit">Decrypt</button>
+  </div>
+</form>
+
+<script language="JavaScript" type="text/javascript">
+//the UI behaviour
+
+
+	//helpers:	
+	//wires an event handler to an element
+	var bind = function (element, type, handler)
+	{
+		if (element.addEventListener) {
+			element.addEventListener(type, handler, false);
+		} else {
+			element.attachEvent('on'+type, handler);
+		}			
+	};
+
+	//state:
+	var model = {
+		pad : null,
+		payload : null	
+	};
+
+	//wire up the UI		
+	(function()
+	{
+		//when the pad file element is changed, load the pad
+		bind(document.getElementById("pad-file"), "change", function(e){
+		
+			if (!e) var e = window.event;
+			// e gives access to the event in all browsers
+	    	e.preventDefault();
+	    	
+	    	//get the file name
+	    	var padFile = document.getElementById("pad-file").files[0];
+        	
+        	
+        	var reader = new FileReader();
+			
+			//on read load hydrate model.pad
+			reader.onload = function (e) 
+			{
+				//get the file contents
+				var data = e.target.result;
+				model.pad = data;  	
+		     	
+		     	//set pad-size label
+	     		var sizeEl = document.getElementById("pad-size");
+	     		sizeEl.textContent = "Characters: " + data.length; 		
+			};
+ 
+			//read the file
+			reader.readAsText(padFile); 
+	  	});
+	  		
+		//when any payload is typed, set model.payload
+	  	bind(document.getElementById("payload-text"), "keyup", function(e){
+		
+			if (!e) var e = window.event;
+			// e gives access to the event in all browsers
+	    	e.preventDefault();
+	    	
+	    	//set model
+	    	model.payload = document.getElementById("payload-text").value;
+        	
+	     	//set payload-size label
+	     	var sizeEl = document.getElementById("payload-size");
+	     	sizeEl.textContent = "Characters: " + model.payload.length; 
+	  	});
+		
+		//when encrypt is clicked, set model.payload
+		bind(document.getElementById("payload-encrypt"), "click", function(e){
+		
+			if (!e) var e = window.event;
+			// e gives access to the event in all browsers
+	    	e.preventDefault();
+	    	
+	    	model.payload = OTP.encrypt(model.payload, model.pad);
+			document.getElementById("payload-text").value = model.payload;
+	  	});
+	  	
+	  	//when decrypt is clicked, set model.payload
+	  	bind(document.getElementById("payload-decrypt"), "click", function(e){
+		
+			if (!e) var e = window.event;
+			// e gives access to the event in all browsers
+	    	e.preventDefault();
+	    	
+	    	model.payload = OTP.decrypt(model.payload, model.pad);
+			document.getElementById("payload-text").value = model.payload;
+	  	});
+	})();
+</script>
+
+</body>
+</html>
